@@ -578,6 +578,20 @@ def apply_additional_params(
         model.nu[p] = params_modifier.nu
         state.particle_density[p] = params_modifier.density
 
+## my part
+@wp.kernel
+def apply_per_particle_material(
+    E_array: wp.array(dtype=float),
+    nu_array: wp.array(dtype=float),
+    density_array: wp.array(dtype=float),
+    model: MPMModelStruct,
+    state: MPMStateStruct,
+):
+    p = wp.tid()
+    model.E[p] = E_array[p]
+    model.nu[p] = nu_array[p]
+    state.particle_density[p] = density_array[p]
+
 
 @wp.kernel
 def selection_add_impulse_on_particles(

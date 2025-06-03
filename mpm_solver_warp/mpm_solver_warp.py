@@ -378,6 +378,35 @@ class MPM_Simulator_WARP:
                 ],
                 device=device,
             )
+        ## my part
+        if "per_particle_material" in kwargs:
+            E_tensor = kwargs["per_particle_material"]["E"]
+            nu_tensor = kwargs["per_particle_material"]["nu"]
+            density_tensor = kwargs["per_particle_material"]["density"]
+
+            wp.launch(
+                kernel=apply_per_particle_material,
+                dim=self.n_particles,
+                inputs=[
+                    torch2warp_float(E_tensor, dvc=device),
+                    torch2warp_float(nu_tensor, dvc=device),
+                    torch2warp_float(density_tensor, dvc=device),
+                    self.mpm_model,
+                    self.mpm_state,
+                ],
+                device=device,
+            )
+
+            wp.launch(
+                kernel=get_float_array_product,
+                dim=self.n_particles,
+                inputs=[
+                    self.mpm_state.particle_density,
+                    self.mpm_state.particle_vol,
+                    self.mpm_state.particle_mass,
+                ],
+                device=device,
+            )
 
     def finalize_mu_lam(self, device="cuda:0"):
         wp.launch(

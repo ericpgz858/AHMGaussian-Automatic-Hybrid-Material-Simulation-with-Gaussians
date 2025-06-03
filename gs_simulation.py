@@ -9,7 +9,9 @@ import torch
 import os
 import numpy as np
 import json
+from glob import glob
 from tqdm import tqdm
+import faiss
 
 # Gaussian splatting dependencies
 from utils.sh_utils import eval_sh
@@ -37,11 +39,198 @@ from utils.transformation_utils import *
 from utils.camera_view_utils import *
 from utils.render_utils import *
 
+import matplotlib.pyplot as plt
+
 wp.init()
 wp.config.verify_cuda = True
 
 ti.init(arch=ti.cuda, device_memory_GB=8.0)
 
+## my part
+
+color_to_material = {
+    (0, 0, 0): "metal",
+    (255, 0, 0): "jelly",
+    (255, 255, 255): "foam",
+    (0, 255, 0): "plasticine",
+    (0, 0, 255): "sand",
+    (128, 128, 128): "snow"
+}
+
+material_param_table = {
+    "metal":       {"E": 2e6,  "nu": 0.4, "density": 70},
+    "jelly":       {"E": 2e6,  "nu": 0.4, "density": 70},
+    "foam":        {"E": 800,  "nu": 0.25, "density": 100},
+    "plasticine":  {"E": 3e3,  "nu": 0.45, "density": 1600},
+    "sand":        {"E": 5e3,  "nu": 0.35, "density": 1800},
+    "snow":        {"E": 1e4,  "nu": 0.3, "density": 900},
+}
+
+def show_3d_points(points, target_idx = 1000):
+    points = points.detach().cpu().numpy()
+    target_point = points[target_idx]
+
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection="3d")
+
+    # 所有點用灰色顯示
+    ax.scatter(points[:, 0], points[:, 1], points[:, 2], s=1, c='gray', alpha=0.5)
+
+    # 將第 1000 個點標紅
+    ax.scatter(
+        target_point[0], target_point[1], target_point[2],
+        s=50, c='red', label=f"Point {target_idx}"
+    )
+
+    ax.set_title("Gaussian Point Cloud with Target Highlighted")
+    ax.legend()
+    plt.show()
+
+def project_points(particle_x, K, R, t):
+    # x_cam = R @ x_world + t
+    x_cam = (R @ particle_x.T).T + t
+    x_img = (K @ x_cam.T).T
+    x_img = x_img[:, :2] / x_img[:, 2:3]  # normalize
+    return x_img
+
+def vote_color_from_images(particle_x, image_list, camera_params_list):
+    votes = [{} for _ in range(len(particle_x))]
+
+    for img, (K, R, t) in zip(image_list, camera_params_list):
+        proj = project_points(particle_x, K, R, t)
+        H, W = img.shape[:2]
+
+        index = 1000
+        u0, v0 = proj[index]
+        x0, y0 = int(u0), int(v0)
+        print(f"Gaussian[{index}] projected to image[0] pixel: ({x0}, {y0})")
+
+        # 圈出那個點
+        img_vis = img.copy()
+        if 0 <= x0 < W and 0 <= y0 < H:
+            cv2.circle(img_vis, (x0, y0), radius=5, color=(255, 0, 0), thickness=2)
+
+        plt.imshow(img_vis)
+        plt.title(f"Image[0] with Gaussian[0] projection {img[y0, x0]} at ({x0}, {y0})")
+        plt.axis('off')
+        plt.show()
+
+        for i, (u, v) in enumerate(proj):
+            x, y = int(u), int(v)
+            if 0 <= x < W and 0 <= y < H:
+                color = tuple(img[y, x])
+                votes[i][color] = votes[i].get(color, 0) + 1
+                # print(f"Particle {i} votes for color {color} at image position ({x}, {y})")
+            # else:
+            #     print(f"[Skip] Particle {i} projected to out-of-bound ({x}, {y})")
+        
+        
+    # show the votes for the first particle
+    # print("votes at 0:", votes[0])
+    # colors = [max(vote.items(), key=lambda x: x[1])[0] if vote else (255, 255, 255) for vote in votes]
+    # print("colors at 0:", colors[0])
+
+    return [max(vote.items(), key=lambda x: x[1])[0] if vote else (255, 255, 255) for vote in votes]
+
+def material_params_from_colors(colors, color_to_material, param_table):
+    E_list, nu_list, density_list = [], [], []
+
+    # See if the first color is in the mapping
+    # first_color = colors[0]
+    # first_material = color_to_material.get(first_color, "jelly")
+    # print(f"[Gaussian 0] Color {first_color} → Material: {first_material}")
+
+    for color in colors:
+        material = color_to_material.get(color, "jelly")
+        # print(f"Color {color} mapped to material {material}")
+        params = param_table[material]
+        E_list.append(params["E"])
+        nu_list.append(params["nu"])
+        density_list.append(params["density"])
+    return (
+        torch.tensor(E_list, dtype=torch.float32, device=device),
+        torch.tensor(nu_list, dtype=torch.float32, device=device),
+        torch.tensor(density_list, dtype=torch.float32, device=device),
+    )
+
+def load_nerf_synthetic_camera_and_images(json_path, image_root, H=800, W=800):
+    image_list = []
+    camera_params_list = []
+
+    with open(json_path, 'r') as f:
+        meta = json.load(f)
+
+    angle_x = meta["camera_angle_x"]
+    f = 0.5 * W / np.tan(0.5 * angle_x)  # focal length
+    K = np.array([
+        [f, 0, W / 2],
+        [0, f, H / 2],
+        [0, 0, 1]
+    ])
+
+    for frame in meta["frames"]:
+        image_path = os.path.join(image_root, frame["file_path"] + ".png")
+        if not os.path.exists(image_path):
+            continue
+        image = cv2.imread(image_path)
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        image_list.append(image)
+
+        transform = np.array(frame["transform_matrix"])
+        R_c2w = transform[:3, :3]
+        t_c2w = transform[:3, 3]
+        R = R_c2w.T
+        t = -R @ t_c2w
+        camera_params_list.append((K, R, t))
+
+    return image_list, camera_params_list
+
+def infer_fill_material_by_knn(
+    mpm_init_pos, gs_num, image_list, camera_params_list,
+    color_to_material, material_param_table, K=5
+):
+    device = mpm_init_pos.device
+
+    # Step 1: 投票前 gs_num 的 Gaussian
+    visible_pos = mpm_init_pos[:gs_num]
+    visible_np = visible_pos.detach().cpu().numpy()
+    colors = vote_color_from_images(visible_np, image_list, camera_params_list)
+    known_materials = [color_to_material.get(tuple(c), "jelly") for c in colors]
+
+    # Step 2: 映射 visible 粒子的材質參數
+    E_main, nu_main, density_main = material_params_from_colors(
+        colors, color_to_material, material_param_table
+    )
+
+    # Step 3: 使用 torch.cdist 找填充粒子最近鄰
+    fill_pos = mpm_init_pos[gs_num:]  # (M, 3)
+    dists = torch.cdist(fill_pos, visible_pos, p=2)  # (M, gs_num)
+    knn_inds = torch.topk(dists, k=K, largest=False).indices  # (M, K)
+
+    # Step 4: 多數決決定填充材質
+    E_list, nu_list, density_list = [], [], []
+    for i in range(knn_inds.shape[0]):
+        nbrs = knn_inds[i].cpu().tolist()
+        materials = [known_materials[j] for j in nbrs]
+        mat = max(set(materials), key=materials.count)
+        param = material_param_table[mat]
+        E_list.append(param["E"])
+        nu_list.append(param["nu"])
+        density_list.append(param["density"])
+
+    E_fill = torch.tensor(E_list, dtype=torch.float32, device=device)
+    nu_fill = torch.tensor(nu_list, dtype=torch.float32, device=device)
+    density_fill = torch.tensor(density_list, dtype=torch.float32, device=device)
+
+    # Step 5: 合併前後
+    E_tensor = torch.cat([E_main, E_fill], dim=0)
+    nu_tensor = torch.cat([nu_main, nu_fill], dim=0)
+    density_tensor = torch.cat([density_main, density_fill], dim=0)
+
+    return E_tensor, nu_tensor, density_tensor
+
+
+## end of my part
 
 class PipelineParamsNoparse:
     """Same as PipelineParams but without argument parser."""
@@ -183,7 +372,7 @@ if __name__ == "__main__":
         )
 
     # fill particles if needed
-    gs_num = transformed_pos.shape[0]
+    visible_gs_num = gs_num = transformed_pos.shape[0]
     device = "cuda:0"
     filling_params = preprocessing_params["particle_filling"]
 
@@ -246,6 +435,30 @@ if __name__ == "__main__":
         n_grid=material_params["n_grid"],
         grid_lim=material_params["grid_lim"],
     )
+
+    ## My part 將 mpm_init_pos project 到原始的 image 上面
+    show_3d_points(init_pos, target_idx=1000)
+    print("Load image list and camera parameters list")
+    image_list, camera_params_list = load_nerf_synthetic_camera_and_images("../nerf_synthetic/ficus/transforms_train.json", 
+                                                                           "../nerf_synthetic/ficus/")
+    
+    print("Infer material parameters by KNN")
+    E_tensor, nu_tensor, density_tensor = infer_fill_material_by_knn(
+        init_pos[:visible_gs_num].to(device), visible_gs_num, image_list, camera_params_list,
+        color_to_material, material_param_table
+    )
+    print("Visible gs number:", visible_gs_num)
+    # print("E_tensor:", E_tensor[0])
+    # print("nu_tensor:", nu_tensor[0])
+    # print("density_tensor:", density_tensor[0])
+
+    print("Set material parameters")
+    material_params["per_particle_material"] = {
+        "E": E_tensor,
+        "nu": nu_tensor,
+        "density": density_tensor,
+    }
+    
     mpm_solver.set_parameters_dict(material_params)
 
     # Note: boundary conditions may depend on mass, so the order cannot be changed!
