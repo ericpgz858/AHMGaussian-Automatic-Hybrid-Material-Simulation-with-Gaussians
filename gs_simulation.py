@@ -59,6 +59,35 @@ color_to_material = {
     (128, 128, 128): "snow"
 }
 
+## 使用方式
+# 會有 color_to_label = {
+#     (128, 128, 128): "pot",
+#     (0, 255, 0): "plant",
+#     (0, 0, 0): "background"
+# }
+def save_gaussians_as_ply_and_json(output_dir, label_to_indices, data_dict, phys_dict):
+    os.makedirs(output_dir, exist_ok=True)
+
+    for label, indices in label_to_indices.items():
+        print(f"Saving {label}: {len(indices)} Gaussians")
+
+        # 選出對應資料
+        subset = {k: v[indices] for k, v in data_dict.items()}
+        phys_subset = {
+            "E": phys_dict["E"][indices].tolist(),
+            "nu": phys_dict["nu"][indices].tolist(),
+            "density": phys_dict["density"][indices].tolist(),
+        }
+
+        # 儲存 ply
+        ply_path = os.path.join(output_dir, f"{label}.ply")
+        particle_position_tensor_to_ply(torch.tensor(subset["pos"]), ply_path)
+
+        # 儲存 json（物理參數）
+        json_path = os.path.join(output_dir, f"{label}_phys.json")
+        with open(json_path, "w") as f:
+            json.dump(phys_subset, f, indent=2)
+
 material_param_table = {
     "metal":       {"E": 2e6,  "nu": 0.4, "density": 70},
     "jelly":       {"E": 2e6,  "nu": 0.4, "density": 70},
@@ -67,6 +96,32 @@ material_param_table = {
     "sand":        {"E": 5e3,  "nu": 0.35, "density": 1800},
     "snow":        {"E": 1e4,  "nu": 0.3, "density": 900},
 }
+
+def show_3d_points_with_colors(points, colors, target_idx=1000):
+    """
+    points: (N, 3) torch.Tensor
+    colors: list of (R, G, B) tuples from vote results
+    """
+    points = points.detach().cpu().numpy()
+    target_point = points[target_idx]
+
+    fig = plt.figure(figsize=(10, 8))
+    ax = fig.add_subplot(111, projection="3d")
+
+    # 正規化顏色為 [0, 1] 的浮點數
+    norm_colors = np.array(colors) / 255.0
+
+    ax.scatter(points[:, 0], points[:, 1], points[:, 2],
+               s=3, c=norm_colors, alpha=0.8)
+
+    # 標記特定點（選用）
+    ax.scatter(target_point[0], target_point[1], target_point[2],
+               s=50, c='black', label=f"Target Point {target_idx}")
+
+    ax.set_title("Gaussian Point Cloud Colored by Voted Material Color")
+    ax.legend()
+    plt.show()
+
 
 def show_3d_points(points, target_idx = 1000):
     points = points.detach().cpu().numpy()
@@ -79,10 +134,10 @@ def show_3d_points(points, target_idx = 1000):
     ax.scatter(points[:, 0], points[:, 1], points[:, 2], s=1, c='gray', alpha=0.5)
 
     # 將第 1000 個點標紅
-    ax.scatter(
-        target_point[0], target_point[1], target_point[2],
-        s=50, c='red', label=f"Point {target_idx}"
-    )
+    # ax.scatter(
+    #     target_point[0], target_point[1], target_point[2],
+    #     s=50, c='red', label=f"Point {target_idx}"
+    # )
 
     ax.set_title("Gaussian Point Cloud with Target Highlighted")
     ax.legend()
@@ -122,9 +177,11 @@ def load_nerf_synthetic_camera_and_images(json_path, image_root):
     ])
 
     for frame in meta["frames"]:
+        # frame = meta["frames"][0]
+        # print(frame)
         image_path = os.path.join(image_root, frame["file_path"] + ".png")
-        if not os.path.exists(image_path):
-            continue
+        # image_path = os.path.join("seg_map.png")
+        
         image = cv2.imread(image_path)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         image_list.append(image)
@@ -339,8 +396,24 @@ def knn_infill(particle_x, initialized_mask, color_votes, color_to_material, par
         torch.tensor(E_list, dtype=torch.float32, device=device),
         torch.tensor(nu_list, dtype=torch.float32, device=device),
         torch.tensor(density_list, dtype=torch.float32, device=device),
+        colors
     )
 
+def load_phys_parameter_from_json(json_path):
+
+    with open(json_path) as f:
+        phys = json.load(f)
+
+    return {
+        "E": torch.tensor(phys["E"], dtype=torch.float32, device=device),
+        "nu": torch.tensor(phys["nu"], dtype=torch.float32, device=device),
+        "density": torch.tensor(phys["density"], dtype=torch.float32, device=device),
+    }
+## Usage example:
+# gaussian_dict = load_combined_gaussians_from_ply_json(
+#     "merged_gaussians.ply",
+#     "merged_gaussians_phys.json"
+# )
 ## end of my part
 
 class PipelineParamsNoparse:
@@ -548,7 +621,7 @@ if __name__ == "__main__":
     )
 
     ## My part 將 mpm_init_pos project 到原始的 image 上面
-    # show_3d_points(init_pos, target_idx=1000)
+    show_3d_points(init_pos, target_idx=1000)
     print("Load image list and camera parameters list")
     image_list, camera_params_list = load_nerf_synthetic_camera_and_images("../nerf_synthetic/ficus/transforms_train.json", 
                                                                            "../nerf_synthetic/ficus/")
@@ -570,7 +643,7 @@ if __name__ == "__main__":
     )
 
     print("Start infilling material parameters by KNN")
-    E_tensor, nu_tensor, density_tensor = knn_infill(
+    E_tensor, nu_tensor, density_tensor, final_colors = knn_infill(
         particle_x=origin_pos,         # same as before
         initialized_mask=initialized,        # bool mask
         color_votes=color_votes,
@@ -578,6 +651,8 @@ if __name__ == "__main__":
         param_table=material_param_table,
         k=5
     )
+
+    show_3d_points_with_colors(init_pos, final_colors)
         
     # print("Infer material parameters by KNN")
     # E_tensor, nu_tensor, density_tensor = infer_fill_material_by_knn(
