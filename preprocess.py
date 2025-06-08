@@ -261,6 +261,34 @@ def knn_infill(particle_x, initialized_mask, color_votes, color_to_material, par
         colors
     )
 
+def knn_fill_new_physics(init_pos, final_pos, E_tensor, nu_tensor, density_tensor, k=3):
+    N = init_pos.shape[0]
+    M = final_pos.shape[0] - N
+
+    if M <= 0:
+        print("No new Gaussians added.")
+        return E_tensor, nu_tensor, density_tensor
+
+    # 對所有點做查詢，取得新增點
+    new_pos = final_pos[N:].detach().cpu().numpy()
+    orig_pos = init_pos.detach().cpu().numpy()
+
+    # 建 KNN tree
+    tree = cKDTree(orig_pos)
+    _, knn_indices = tree.query(new_pos, k=k)
+
+    # 平均最近鄰的物理參數
+    knn_E = E_tensor[knn_indices].mean(dim=1)
+    knn_nu = nu_tensor[knn_indices].mean(dim=1)
+    knn_density = density_tensor[knn_indices].mean(dim=1)
+
+    # 補齊到新 tensor
+    new_E = torch.cat([E_tensor, knn_E], dim=0)
+    new_nu = torch.cat([nu_tensor, knn_nu], dim=0)
+    new_density = torch.cat([density_tensor, knn_density], dim=0)
+
+    return new_E, new_nu, new_density
+
 def save_gaussians_with_saveply(
     output_dir, label_to_indices, gaussians, phys_dict
 ):
@@ -333,31 +361,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=str, required=True)
     parser.add_argument("--output_path", type=str, default=None)
-    parser.add_argument("--config", type=str, required=True)
-    parser.add_argument("--output_ply", action="store_true")
-    parser.add_argument("--output_h5", action="store_true")
-    parser.add_argument("--render_img", action="store_true")
-    parser.add_argument("--compile_video", action="store_true")
-    parser.add_argument("--white_bg", action="store_true")
-    parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--camera_config", type=str, required=True)
+    parser.add_argument("--camera_list", type=str, required=True)
     args = parser.parse_args()
+    print(args)
 
     if not os.path.exists(args.model_path):
         AssertionError("Model path does not exist!")
-    if not os.path.exists(args.config):
-        AssertionError("Scene config does not exist!")
     if args.output_path is not None and not os.path.exists(args.output_path):
         os.makedirs(args.output_path)
-
-    # load scene config
-    print("Loading scene config...")
-    (
-        material_params,
-        bc_params,
-        time_params,
-        preprocessing_params,
-        camera_params,
-    ) = decode_param_json(args.config)
 
     # load gaussians
     print("Loading gaussians...")
@@ -365,11 +377,6 @@ if __name__ == "__main__":
     gaussians = load_checkpoint(model_path)
     pipeline = PipelineParamsNoparse()
     pipeline.compute_cov3D_python = True
-    background = (
-        torch.tensor([1, 1, 1], dtype=torch.float32, device="cuda")
-        if args.white_bg
-        else torch.tensor([0, 0, 0], dtype=torch.float32, device="cuda")
-    )
 
     # init the scene
     print("Initializing scene and pre-processing...")
@@ -384,8 +391,8 @@ if __name__ == "__main__":
     init_shs = params["shs"]
     
     print("Load image list and camera parameters list")
-    image_list, camera_params_list = load_nerf_synthetic_camera_and_images("../nerf_synthetic/ficus/transforms_train.json", 
-                                                                           "../nerf_synthetic/ficus/")
+    image_list, camera_params_list = load_nerf_synthetic_camera_and_images(args.camera_config, 
+                                                                           args.camera_list)
     
     # origin_pos = mpm_init_pos.clone()
     # origin_pos = apply_inverse_rotations(
@@ -439,25 +446,21 @@ if __name__ == "__main__":
         "density": density_tensor.detach().cpu().numpy(),
     }
 
-    # 執行儲存
-    # save_gaussians_as_ply_and_json("output_groups", label_to_indices, data_dict, phys_dict)
+    # Save Gssians with save_ply
     save_gaussians_with_saveply(
-        "output_groups", label_to_indices, gaussians, phys_dict
+        args.output_path, label_to_indices, gaussians, phys_dict
     )
 
-    gaussians = GaussianModel(3)
-    gaussians.load_ply("output_groups/water.ply")
+    # gaussians = GaussianModel(3)
+    # gaussians.load_ply("output_groups/water.ply")
 
-    # 檢查各欄位基本資訊
-    print("xyz:", gaussians.get_xyz.shape)
-    print("opacity:", gaussians.get_opacity.shape)
-    print("sh:", gaussians.get_features.shape)
-    print("scale:", gaussians.get_scaling.shape)
-    print("rotation:", gaussians.get_rotation.shape)
-
-    # 是否有 nan / inf
-    print("has NaN in xyz:", torch.isnan(gaussians.get_xyz).any())
-    print("has NaN in opacity:", torch.isnan(gaussians.get_opacity).any())
-    print("has NaN in SH:", torch.isnan(gaussians.get_features).any())
-    print("has NaN in scaling:", torch.isnan(gaussians.get_scaling).any())
-    print("has NaN in rotation:", torch.isnan(gaussians.get_rotation).any())
+    # print("xyz:", gaussians.get_xyz.shape)
+    # print("opacity:", gaussians.get_opacity.shape)
+    # print("sh:", gaussians.get_features.shape)
+    # print("scale:", gaussians.get_scaling.shape)
+    # print("rotation:", gaussians.get_rotation.shape)
+    # print("has NaN in xyz:", torch.isnan(gaussians.get_xyz).any())
+    # print("has NaN in opacity:", torch.isnan(gaussians.get_opacity).any())
+    # print("has NaN in SH:", torch.isnan(gaussians.get_features).any())
+    # print("has NaN in scaling:", torch.isnan(gaussians.get_scaling).any())
+    # print("has NaN in rotation:", torch.isnan(gaussians.get_rotation).any())

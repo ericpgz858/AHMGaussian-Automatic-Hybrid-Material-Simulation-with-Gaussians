@@ -92,8 +92,10 @@ def load_checkpoint(model_path, sh_degree=3, iteration=-1):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=str, required=True)
+    parser.add_argument("--merge_gaussian", type=str, required=True)
     parser.add_argument("--output_path", type=str, default=None)
     parser.add_argument("--config", type=str, required=True)
+    parser.add_argument("--phys_config", type=str, required=True)
     parser.add_argument("--output_ply", action="store_true")
     parser.add_argument("--output_h5", action="store_true")
     parser.add_argument("--render_img", action="store_true")
@@ -122,7 +124,9 @@ if __name__ == "__main__":
     # load gaussians
     print("Loading gaussians...")
     model_path = args.model_path
-    gaussians = load_checkpoint(model_path)
+    # gaussians = load_checkpoint(model_path)
+    gaussians = GaussianModel(3)
+    gaussians.load_ply(args.merge_gaussian)
     pipeline = PipelineParamsNoparse()
     pipeline.compute_cov3D_python = True
     background = (
@@ -311,12 +315,16 @@ if __name__ == "__main__":
     # print("Set material parameters")
 
     # 讀取 merged_gaussians_phys.json
-    with open("merge_dir/merged_gaussians_phys.json", "r") as f:
+    with open(args.phys_config, "r") as f:
         phys = json.load(f)
 
     E_tensor = torch.tensor(phys["E"], dtype=torch.float32, device="cuda")
     nu_tensor = torch.tensor(phys["nu"], dtype=torch.float32, device="cuda")
     density_tensor = torch.tensor(phys["density"], dtype=torch.float32, device="cuda")
+
+    E_tensor, nu_tensor, density_tensor = knn_fill_new_physics(
+        init_pos, mpm_init_pos, E_tensor, nu_tensor, density_tensor
+    )
 
     # 設定到 material_params
     material_params["per_particle_material"] = {
@@ -324,8 +332,6 @@ if __name__ == "__main__":
         "nu": nu_tensor,
         "density": density_tensor,
     }
-    print("E_tensor:", E_tensor.shape)
-    print("initialized:", mpm_init_pos.shape)
     
     mpm_solver.set_parameters_dict(material_params)
 

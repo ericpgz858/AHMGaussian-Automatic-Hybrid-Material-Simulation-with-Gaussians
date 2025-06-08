@@ -18,123 +18,6 @@ from diff_gaussian_rasterization import GaussianRasterizer
 from diff_gaussian_rasterization import GaussianRasterizationSettings
 from utils.render_utils import *
 
-# class PipelineParamsNoparse:
-#     def __init__(self):
-#         self.convert_SHs_python = False
-#         self.compute_cov3D_python = True
-#         self.debug = False
-
-# def load_checkpoint(model_path, sh_degree=3, iteration=-1):
-#     checkpt_dir = os.path.join(model_path, "point_cloud")
-#     if iteration == -1:
-#         iteration = searchForMaxIteration(checkpt_dir)
-#     checkpt_path = os.path.join(checkpt_dir, f"iteration_{iteration}", "point_cloud.ply")
-
-#     gaussians = GaussianModel(sh_degree)
-#     gaussians.load_ply("merge_dir/merged_gaussians.ply")
-#     return gaussians
-
-# def render_gaussian_model(
-#     gaussians,
-#     frame_num=60,
-# ):
-#     (
-#         _,
-#         _,
-#         time_params,
-#         preprocessing_params,
-#         camera_params,
-#     ) = decode_param_json("config/ficus_config.json")
-
-#     print("Loading gaussians...")
-#     pipeline = PipelineParamsNoparse()
-
-#     background = (
-#         torch.tensor([1, 1, 1], dtype=torch.float32, device="cuda")
-#         if False else torch.tensor([0, 0, 0], dtype=torch.float32, device="cuda")
-#     )
-
-#     print("Extracting parameters...")
-#     params = load_params_from_gs(gaussians, pipeline)
-
-#     pos = params["pos"]
-#     cov3D = params["cov3D_precomp"]
-#     opacity = params["opacity"]
-#     shs = params["shs"]
-#     screen_points = params["screen_points"]
-
-#     # Apply mask
-#     mask = opacity[:, 0] > preprocessing_params["opacity_threshold"]
-#     pos = pos[mask]
-#     cov3D = cov3D[mask]
-#     opacity = opacity[mask]
-#     shs = shs[mask]
-#     screen_points = screen_points[mask]
-
-#     print("Rendering frames...")
-#     height = width = None
-#     frame_dt = time_params["frame_dt"]
-#     frame_num = time_params["frame_num"]
-
-#     camera_params = {
-#         "default_camera_index": 0,
-#         "show_hint": False,
-#         "init_azimuthm": 0.0,         # 初始方位角（水平旋轉角度）
-#         "init_elevation": 15.0,       # 初始仰角（上下觀看角度）
-#         "init_radius": 2.0,           # 與物體中心的距離
-#         "move_camera": True,          # 是否繞場景旋轉
-#         "delta_a": 2.0,               # 每幀增加的方位角度
-#         "delta_e": 0.0,               # 每幀仰角變化量（可設為 0）
-#         "delta_r": 0.0,               # 每幀距離變化量（可設為 0）
-#     }
-
-#     for frame in tqdm(range(frame_num)):
-#         current_camera = get_camera_view(
-#             "model/ficus_whitebg-trained",
-#             default_camera_index=camera_params["default_camera_index"],
-#             show_hint=camera_params["show_hint"],
-#             init_azimuthm=camera_params["init_azimuthm"],
-#             init_elevation=camera_params["init_elevation"],
-#             init_radius=camera_params["init_radius"],
-#             move_camera=camera_params["move_camera"],
-#             current_frame=frame,
-#             delta_a=camera_params["delta_a"],
-#             delta_e=camera_params["delta_e"],
-#             delta_r=camera_params["delta_r"],
-#         )
-
-#         # current_camera.camera_center = current_camera.camera_center.to(pos.device, dtype=pos.dtype)
-
-#         rasterize = initialize_resterize(current_camera, gaussians, pipeline, background)
-
-#         rot = torch.eye(3, device="cuda").expand(pos.shape[0], 3, 3)
-#         colors_precomp = convert_SH(shs, current_camera, gaussians, pos, rot)
-
-#         rendering, _ = rasterize(
-#             means3D=pos,
-#             means2D=screen_points,
-#             shs=None,
-#             colors_precomp=colors_precomp,
-#             opacities=opacity,
-#             scales=None,
-#             rotations=None,
-#             cov3D_precomp=cov3D,
-#         )
-
-#         image = rendering.permute(1, 2, 0).detach().cpu().numpy()
-#         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-#         if height is None or width is None:
-#             height = image.shape[0] // 2 * 2
-#             width = image.shape[1] // 2 * 2
-
-#         cv2.imwrite(os.path.join("test_output", f"{frame:04d}.png"), 255 * image)
-
-#     fps = int(1.0 / time_params["frame_dt"])
-#     os.system(
-#         f"ffmpeg -framerate {fps} -i test_output/%04d.png -c:v libx264 -s {width}x{height} -y -pix_fmt yuv420p test_output/output.mp4"
-#     )
-
 def load_gaussians_and_phys_from_folder(folder_path, sh_degree=3):
     ply_files = [f for f in os.listdir(folder_path) if f.endswith(".ply")]
     all_pos, all_shs, all_opacities = [], [], []
@@ -232,9 +115,6 @@ def save_combined_gaussians_to_ply_json_from_models(
         "nu": torch.cat(all_nu, dim=0).tolist(),
         "density": torch.cat(all_density, dim=0).tolist(),
     }
-    print(f"[Physics] E: {len(phys_dict['E'])} ...")
-    print(f"[Physics] nu: {len(phys_dict['nu'])} ...")
-    print(f"[Physics] density: {len(phys_dict['density'])} ...")
     with open(f"{filename_prefix}_phys.json", "w") as f:
         json.dump(phys_dict, f, indent=2)
     print(f"[Saved] Physics parameters JSON → {filename_prefix}_phys.json")
@@ -327,6 +207,7 @@ def compare_tensors(name, t1, t2, atol=1e-6):
     else:
         print(f"[✅] {name}: matched")
     
+    
 ply_paths = sorted(glob("output_groups/*.ply"))
 models = []
 for path in ply_paths:
@@ -343,10 +224,10 @@ json_paths = [p.replace(".ply", "_phys.json") for p in ply_paths]
 # 呼叫合併儲存函式
 save_combined_gaussians_to_ply_json_from_models(models, json_paths, filename_prefix="merge_dir/merged_gaussians")
 
-g = GaussianModel(3)
-g.load_ply("merge_dir/merged_gaussians.ply")
-g1 = GaussianModel(3)
-g1.load_ply("output_groups/plant.ply")
+# g = GaussianModel(3)
+# g.load_ply("merge_dir/merged_gaussians.ply")
+# g1 = GaussianModel(3)
+# g1.load_ply("output_groups/plant.ply")
 # compare_tensors("XYZ", g.get_xyz.cpu(), g1.get_xyz.cpu())
 # compare_tensors("Features DC", g._features_dc.cpu(), g1._features_dc.cpu())
 # compare_tensors("Features Rest", g._features_rest.cpu(), g1._features_rest.cpu())
