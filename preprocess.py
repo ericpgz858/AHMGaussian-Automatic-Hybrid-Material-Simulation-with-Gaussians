@@ -46,21 +46,11 @@ from collections import defaultdict
 import open3d as o3d
 
 color_to_material = {
-    (0, 0, 0): "metal",
-    (255, 0, 0): "jelly",
-    (255, 255, 255): "foam",
-    (0, 255, 0): "plasticine",
-    (0, 0, 255): "sand",
-    (128, 128, 128): "snow"
-}
-
-material_param_table = {
-    "metal":       {"E": 2e6,  "nu": 0.4, "density": 70},
-    "jelly":       {"E": 2e6,  "nu": 0.4, "density": 70},
-    "foam":        {"E": 800,  "nu": 0.25, "density": 100},
-    "plasticine":  {"E": 3e3,  "nu": 0.45, "density": 1600},
-    "sand":        {"E": 5e3,  "nu": 0.35, "density": 1800},
-    "snow":        {"E": 1e4,  "nu": 0.3, "density": 900},
+    (255, 255, 255): "wood",
+    (14, 106, 71): "jelly",
+    (188, 20, 102): "metal",
+    (121, 210, 214): "soil",
+    (102, 179, 92): "jelly"
 }
 
 color_to_label = {
@@ -69,6 +59,18 @@ color_to_label = {
     (188, 20, 102): "pot",
     (121, 210, 214): "water",
     (102, 179, 92): "artifact"
+}
+
+material_name_to_index = {
+    "sand": 0,
+    "soil": 1,
+    "metal": 2,
+    "jelly": 3,
+    "plush": 4,
+    "wood": 5,
+    "plastic": 6,
+    "paste": 7,
+    "liquid": 8
 }
 
 def show_3d_points_with_colors(points, colors, target_idx=1000):
@@ -210,7 +212,7 @@ def z_buffer_vote(particle_x, image_list, camera_params_list, max_per_pixel=3, v
 
     return color_votes, initialized
 
-def knn_infill(particle_x, initialized_mask, color_votes, color_to_material, param_table, k=5):
+def knn_infill(particle_x, initialized_mask, color_votes, color_to_material, k=5):
     num_particles = len(particle_x)
     colors = [(255, 255, 255)] * num_particles
     for i, vote in enumerate(color_votes):
@@ -237,57 +239,61 @@ def knn_infill(particle_x, initialized_mask, color_votes, color_to_material, par
         colors[idx] = color
 
     # Convert to tensors
-    E_list, nu_list, density_list = [], [], []
-    material_count = defaultdict(int)
-    for color in colors:
-        mat = color_to_material.get(color, "jelly")
-        # print(f"Color {color} mapped to material {mat}")
-        # if mat == "metal":
-        #     print(f"Color {color} mapped to material {mat}")
-        material_count[mat] += 1
-        p = param_table[mat]
-        E_list.append(p["E"])
-        nu_list.append(p["nu"])
-        density_list.append(p["density"])
+    # E_list, nu_list, density_list = [], [], []
+    # material_names = []
+    # material_count = defaultdict(int)
+    # for color in colors:
+    #     mat = color_to_material.get(color, "jelly")
+    #     material_names.append(mat)
+    #     material_count[mat] += 1
+        # p = param_table[mat]
+        # E_list.append(p["E"])
+        # nu_list.append(p["nu"])
+        # density_list.append(p["density"])
+
+    material_indices = [material_name_to_index[color_to_material.get(color, "jelly")] for color in colors]
+    material_tensor = torch.tensor(material_indices, dtype=torch.long, device="cuda")
 
     print("Material assignment statistics:")
-    for mat, count in material_count.items():
-        print(f"{mat}: {count} gaussians")
-    device = "cuda:0"
-    return (
-        torch.tensor(E_list, dtype=torch.float32, device=device),
-        torch.tensor(nu_list, dtype=torch.float32, device=device),
-        torch.tensor(density_list, dtype=torch.float32, device=device),
-        colors
-    )
+    # for mat, count in material_count.items():
+    #     print(f"{mat}: {count} gaussians")
 
-def knn_fill_new_physics(init_pos, final_pos, E_tensor, nu_tensor, density_tensor, k=3):
+    return material_tensor, colors
+
+def knn_fill_new_physics_dict(init_pos, final_pos, material_dict, k=3):
+    """
+    對 material_dict 裡每個欄位做 KNN 補點，並回傳新的 dict
+    """
     N = init_pos.shape[0]
     M = final_pos.shape[0] - N
 
     if M <= 0:
         print("No new Gaussians added.")
-        return E_tensor, nu_tensor, density_tensor
+        return material_dict  # 原封不動返回
 
-    # 對所有點做查詢，取得新增點
+    # KNN 查鄰居
     new_pos = final_pos[N:].detach().cpu().numpy()
     orig_pos = init_pos.detach().cpu().numpy()
-
-    # 建 KNN tree
     tree = cKDTree(orig_pos)
     _, knn_indices = tree.query(new_pos, k=k)
 
-    # 平均最近鄰的物理參數
-    knn_E = E_tensor[knn_indices].mean(dim=1)
-    knn_nu = nu_tensor[knn_indices].mean(dim=1)
-    knn_density = density_tensor[knn_indices].mean(dim=1)
+    filled_dict = {}
+    for key, tensor in material_dict.items():
+        # shape: (N,)
+        data = tensor.detach().cpu()
+        if data.dtype == torch.long:
+            # 取最近鄰眾數（mode）
+            neighbors = data[knn_indices]  # (M, k)
+            mode_vals = torch.mode(neighbors, dim=1).values  # (M,)
+            new_data = torch.cat([data, mode_vals], dim=0)
+        else:
+            # 取平均
+            avg_vals = data[knn_indices].mean(dim=1)  # (M,)
+            new_data = torch.cat([data, avg_vals], dim=0)
 
-    # 補齊到新 tensor
-    new_E = torch.cat([E_tensor, knn_E], dim=0)
-    new_nu = torch.cat([nu_tensor, knn_nu], dim=0)
-    new_density = torch.cat([density_tensor, knn_density], dim=0)
+        filled_dict[key] = new_data.to(tensor.device)
 
-    return new_E, new_nu, new_density
+    return filled_dict
 
 def save_gaussians_with_saveply(
     output_dir, label_to_indices, gaussians, phys_dict
@@ -305,7 +311,15 @@ def save_gaussians_with_saveply(
         g_sub.save_ply(ply_path)           # 若 fork 過，可加 as_binary=True
 
         # 物理參數 json
-        phys_subset = {k: phys_dict[k][idxs].tolist() for k in phys_dict}
+        phys_subset = {}
+        for k in phys_dict:
+            v = phys_dict[k]
+            if isinstance(v, torch.Tensor):
+                phys_subset[k] = v[idxs].tolist()
+            else:
+                v_np = np.asarray(v)
+                phys_subset[k] = v_np[idxs].tolist()
+
         with open(os.path.join(output_dir, f"{label}_phys.json"), "w") as f:
             json.dump(phys_subset, f, indent=2)
 
@@ -328,7 +342,6 @@ def build_subset_gaussian_from_model(g_src: GaussianModel, indices) -> GaussianM
     g_sub._scaling       = g_src._scaling.detach().cpu()[indices].clone()
     g_sub._rotation      = g_src._rotation.detach().cpu()[indices].clone()
     return g_sub
-
 
 def safe_numpy(x):
     return None if x is None else x.detach().cpu().numpy()
@@ -411,12 +424,11 @@ if __name__ == "__main__":
     )
 
     print("Start infilling material parameters by KNN")
-    E_tensor, nu_tensor, density_tensor, final_colors = knn_infill(
+    material_tensor, final_colors = knn_infill(
         particle_x=project_pos,         # same as before
         initialized_mask=initialized,        # bool mask
         color_votes=color_votes,
         color_to_material=color_to_material, 
-        param_table=material_param_table,
         k=5
     )
 
@@ -441,9 +453,7 @@ if __name__ == "__main__":
     }
 
     phys_dict = {
-        "E": E_tensor.detach().cpu().numpy(),
-        "nu": nu_tensor.detach().cpu().numpy(),
-        "density": density_tensor.detach().cpu().numpy(),
+        "material": material_tensor
     }
 
     # Save Gssians with save_ply

@@ -6,6 +6,13 @@ from engine_utils import *
 from warp_utils import *
 from mpm_utils import *
 
+def torch2warp_int(tensor: torch.Tensor, dvc="cuda:0"):
+    """Convert PyTorch int tensor to Warp int array (int32)"""
+    tensor = tensor.to(dtype=torch.int32, device=dvc)  # ✅ 移到正確 device
+    return wp.from_torch(tensor.contiguous(), dtype=wp.int32)
+
+
+
 
 class MPM_Simulator_WARP:
     def __init__(self, n_particles, n_grid=100, grid_lim=1.0, device="cuda:0"):
@@ -35,20 +42,29 @@ class MPM_Simulator_WARP:
         self.mpm_model.nu = wp.zeros(shape=n_particles, dtype=float, device=device)
         self.mpm_model.mu = wp.zeros(shape=n_particles, dtype=float, device=device)
         self.mpm_model.lam = wp.zeros(shape=n_particles, dtype=float, device=device)
+        self.mpm_model.softening = wp.zeros(shape=n_particles, dtype=float, device=device)
+        self.mpm_model.friction_angle = wp.zeros(shape=n_particles, dtype=float, device=device)
+        self.mpm_model.alpha = wp.zeros(shape=n_particles, dtype=float, device=device)
+        self.mpm_model.hardening = wp.zeros(shape=n_particles, dtype=float, device=device)
+        self.mpm_model.xi = wp.zeros(shape=n_particles, dtype=float, device=device)
+        self.mpm_model.plastic_viscosity = wp.zeros(shape=n_particles, dtype=float, device=device)
+        self.mpm_model.cohesion = wp.zeros(shape=n_particles, dtype=float, device=device)
 
         self.mpm_model.update_cov_with_F = False
 
         # material is used to switch between different elastoplastic models. 0 is jelly
         self.mpm_model.material = 0
+        # per-particle material id
+        self.mpm_model.material_id = wp.zeros(shape=n_particles, dtype=int, device=device)
 
-        self.mpm_model.plastic_viscosity = 0.0
-        self.mpm_model.softening = 0.1
+        #self.mpm_model.plastic_viscosity = 0.0
+        #self.mpm_model.softening = 0.1
         self.mpm_model.yield_stress = wp.zeros(
             shape=n_particles, dtype=float, device=device
         )
-        self.mpm_model.friction_angle = 25.0
-        sin_phi = wp.sin(self.mpm_model.friction_angle / 180.0 * 3.14159265)
-        self.mpm_model.alpha = wp.sqrt(2.0 / 3.0) * 2.0 * sin_phi / (3.0 - sin_phi)
+        # self.mpm_model.friction_angle = 25.0
+        # sin_phi = wp.sin(self.mpm_model.friction_angle / 180.0 * 3.14159265)
+        self.mpm_model.alpha = wp.zeros(shape=n_particles, dtype=float, device=device)
 
         self.mpm_model.gravitational_accelaration = wp.vec3(0.0, 0.0, 0.0)
 
@@ -379,34 +395,81 @@ class MPM_Simulator_WARP:
                 device=device,
             )
         ## my part
+        # if "per_particle_material" in kwargs:
+        #     E_tensor = kwargs["per_particle_material"]["E"]
+        #     nu_tensor = kwargs["per_particle_material"]["nu"]
+        #     density_tensor = kwargs["per_particle_material"]["density"]
+
+        #     wp.launch(
+        #         kernel=apply_per_particle_material,
+        #         dim=self.n_particles,
+        #         inputs=[
+        #             torch2warp_float(E_tensor, dvc=device),
+        #             torch2warp_float(nu_tensor, dvc=device),
+        #             torch2warp_float(density_tensor, dvc=device),
+        #             self.mpm_model,
+        #             self.mpm_state,
+        #         ],
+        #         device=device,
+        #     )
+
+        #     wp.launch(
+        #         kernel=get_float_array_product,
+        #         dim=self.n_particles,
+        #         inputs=[
+        #             self.mpm_state.particle_density,
+        #             self.mpm_state.particle_vol,
+        #             self.mpm_state.particle_mass,
+        #         ],
+        #         device=device,
+        #     )
+
         if "per_particle_material" in kwargs:
-            E_tensor = kwargs["per_particle_material"]["E"]
-            nu_tensor = kwargs["per_particle_material"]["nu"]
-            density_tensor = kwargs["per_particle_material"]["density"]
+            material_data = kwargs["per_particle_material"]
+            for key, tensor in material_data.items():
+                assert tensor.shape[0] == self.n_particles, f"{key} shape mismatch"
 
-            wp.launch(
-                kernel=apply_per_particle_material,
-                dim=self.n_particles,
-                inputs=[
-                    torch2warp_float(E_tensor, dvc=device),
-                    torch2warp_float(nu_tensor, dvc=device),
-                    torch2warp_float(density_tensor, dvc=device),
-                    self.mpm_model,
-                    self.mpm_state,
-                ],
-                device=device,
-            )
+                if key == "material_id":
+                    self.mpm_model.material_id = torch2warp_int(tensor.contiguous(), dvc=device)
+                    continue
 
-            wp.launch(
-                kernel=get_float_array_product,
-                dim=self.n_particles,
-                inputs=[
-                    self.mpm_state.particle_density,
-                    self.mpm_state.particle_vol,
-                    self.mpm_state.particle_mass,
-                ],
-                device=device,
-            )
+                wp_array = torch2warp_float(tensor.contiguous(), dvc=device)
+
+                if key == "E":
+                    self.mpm_model.E = wp_array
+                elif key == "nu":
+                    self.mpm_model.nu = wp_array
+                elif key == "density":
+                    self.mpm_state.particle_density = wp_array
+                elif key == "yield_stress":
+                    self.mpm_model.yield_stress = wp_array
+                elif key == "plastic_viscosity":
+                    self.mpm_model.plastic_viscosity = wp_array
+                elif key == "friction_angle":
+                    self.mpm_model.friction_angle = wp_array
+                elif key == "softening":
+                    self.mpm_model.softening = wp_array
+                elif key == "cohesion":
+                    self.mpm_model.cohesion = wp_array
+                elif key == "hardening":
+                    self.mpm_model.hardening = wp_array
+                elif key == "xi":
+                    self.mpm_model.xi = wp_array
+                else:
+                    print(f"[Warning] Unknown material parameter: {key}")
+
+            # 只有在提供 friction_angle 時才計算 alpha
+            if "friction_angle" in material_data:
+                wp.launch(
+                    kernel=compute_alpha_from_friction,
+                    dim=self.n_particles,
+                    inputs=[
+                        self.mpm_model.friction_angle,
+                        self.mpm_model.alpha
+                    ],
+                    device=device,
+                )
+
 
     def finalize_mu_lam(self, device="cuda:0"):
         wp.launch(

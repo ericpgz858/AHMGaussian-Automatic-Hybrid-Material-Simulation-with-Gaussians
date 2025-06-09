@@ -19,16 +19,19 @@ class MPMModelStruct:
     E: wp.array(dtype=float)
     nu: wp.array(dtype=float)
     material: int
+    material_id: wp.array(dtype=int)  # ✅ 每顆粒子的模型編號
 
     ######## for plasticity ####
     yield_stress: wp.array(dtype=float)
-    friction_angle: float
-    alpha: float
+    friction_angle: wp.array(dtype=float)
+    alpha: wp.array(dtype=float)
+    hardening: wp.array(dtype=float)
+    xi: wp.array(dtype=float)
+    plastic_viscosity: wp.array(dtype=float)
+    softening: wp.array(dtype=float)
+    cohesion: wp.array(dtype=float)  # ✅ 你原始 material_list 中有
+
     gravitational_accelaration: wp.vec3
-    hardening: float
-    xi: float
-    plastic_viscosity: float
-    softening: float
 
     ####### for damping
     rpic_damping: float
@@ -36,6 +39,7 @@ class MPMModelStruct:
 
     ####### for PhysGaussian: covariance
     update_cov_with_F: int
+
 
 
 @wp.struct

@@ -95,27 +95,36 @@ def von_mises_return_mapping(F_trial: wp.mat33, model: MPMModelStruct, p: int):
         tau[0] - sum_tau / 3.0, tau[1] - sum_tau / 3.0, tau[2] - sum_tau / 3.0
     )
     if wp.length(cond) > model.yield_stress[p]:
+        sig = wp.vec3(
+            wp.max(sig_old[0], 0.01), wp.max(sig_old[1], 0.01), wp.max(sig_old[2], 0.01)
+        )
+
+        epsilon = wp.vec3(
+            wp.log(sig[0]),
+            wp.log(sig[1]),
+            wp.log(sig[2])
+        )
+
+        temp = (epsilon[0] + epsilon[1] + epsilon[2]) / 3.0
         epsilon_hat = epsilon - wp.vec3(temp, temp, temp)
         epsilon_hat_norm = wp.length(epsilon_hat) + 1e-6
         delta_gamma = epsilon_hat_norm - model.yield_stress[p] / (2.0 * model.mu[p])
         epsilon = epsilon - (delta_gamma / epsilon_hat_norm) * epsilon_hat
+
         sig_elastic = wp.mat33(
-            wp.exp(epsilon[0]),
-            0.0,
-            0.0,
-            0.0,
-            wp.exp(epsilon[1]),
-            0.0,
-            0.0,
-            0.0,
-            wp.exp(epsilon[2]),
+            wp.exp(epsilon[0]), 0.0, 0.0,
+            0.0, wp.exp(epsilon[1]), 0.0,
+            0.0, 0.0, wp.exp(epsilon[2]),
         )
         F_elastic = U * sig_elastic * wp.transpose(V)
-        if model.hardening == 1:
+
+        if model.hardening[p] == 1.0:  # ✅ 改這裡
             model.yield_stress[p] = (
-                model.yield_stress[p] + 2.0 * model.mu[p] * model.xi * delta_gamma
+                model.yield_stress[p] + 2.0 * model.mu[p] * model.xi[p] * delta_gamma
             )
+
         return F_elastic
+
     else:
         return F_trial
 
@@ -143,35 +152,35 @@ def von_mises_return_mapping_with_damage(
         tau[0] - sum_tau / 3.0, tau[1] - sum_tau / 3.0, tau[2] - sum_tau / 3.0
     )
     if wp.length(cond) > model.yield_stress[p]:
-        if model.yield_stress[p] <= 0:
+        if model.yield_stress[p] <= 0.0:
             return F_trial
+
         epsilon_hat = epsilon - wp.vec3(temp, temp, temp)
-        epsilon_hat_norm = wp.length(epsilon_hat) + 1e-6
+        epsilon_hat_norm = wp.max(wp.length(epsilon_hat), 1e-6)
         delta_gamma = epsilon_hat_norm - model.yield_stress[p] / (2.0 * model.mu[p])
-        epsilon = epsilon - (delta_gamma / epsilon_hat_norm) * epsilon_hat
-        model.yield_stress[p] = model.yield_stress[p] - model.softening * wp.length(
-            (delta_gamma / epsilon_hat_norm) * epsilon_hat
-        )
-        if model.yield_stress[p] <= 0:
+
+        update_vec = (delta_gamma / epsilon_hat_norm) * epsilon_hat  # ✅ 明確 vec3
+        epsilon = epsilon - update_vec
+
+        model.yield_stress[p] = model.yield_stress[p] - model.softening[p] * wp.length(update_vec)
+
+        if model.yield_stress[p] <= 0.0:
             model.mu[p] = 0.0
             model.lam[p] = 0.0
+
         sig_elastic = wp.mat33(
-            wp.exp(epsilon[0]),
-            0.0,
-            0.0,
-            0.0,
-            wp.exp(epsilon[1]),
-            0.0,
-            0.0,
-            0.0,
-            wp.exp(epsilon[2]),
+            wp.exp(epsilon[0]), 0.0, 0.0,
+            0.0, wp.exp(epsilon[1]), 0.0,
+            0.0, 0.0, wp.exp(epsilon[2]),
         )
         F_elastic = U * sig_elastic * wp.transpose(V)
-        if model.hardening == 1:
-            model.yield_stress[p] = (
-                model.yield_stress[p] + 2.0 * model.mu[p] * model.xi * delta_gamma
-            )
+
+        if model.hardening[p] == 1.0:
+            model.yield_stress[p] = model.yield_stress[p] + 2.0 * model.mu[p] * model.xi[p] * delta_gamma
+
         return F_elastic
+
+    
     else:
         return F_trial
 
@@ -201,7 +210,7 @@ def viscoplasticity_return_mapping_with_StVK(
     if y > 0:
         mu_hat = model.mu[p] * (b_trial[0] + b_trial[1] + b_trial[2]) / 3.0
         s_new_norm = s_trial_norm - y / (
-            1.0 + model.plastic_viscosity / (2.0 * mu_hat * dt)
+            1.0 + model.plastic_viscosity[p] / (2.0 * mu_hat * dt)
         )
         s_new = (s_new_norm / s_trial_norm) * s_trial
         epsilon_new = 1.0 / (2.0 * model.mu[p]) * s_new + wp.vec3(
@@ -247,7 +256,7 @@ def sand_return_mapping(
         + (3.0 * model.lam[p] + 2.0 * model.mu[p])
         / (2.0 * model.mu[p])
         * tr
-        * model.alpha
+        * model.alpha[p]
     )
 
     if delta_gamma <= 0:
@@ -447,20 +456,21 @@ def compute_stress_from_F_trial(
 ):
     p = wp.tid()
     if state.particle_selection[p] == 0:
+        mat_id = model.material_id[p]
         # apply return mapping
-        if model.material == 1:  # metal
+        if mat_id == 1:  # metal
             state.particle_F[p] = von_mises_return_mapping(
                 state.particle_F_trial[p], model, p
             )
-        elif model.material == 2:  # sand
+        elif mat_id == 2:  # sand
             state.particle_F[p] = sand_return_mapping(
                 state.particle_F_trial[p], state, model, p
             )
-        elif model.material == 3:  # visplas, with StVk+VM, no thickening
+        elif mat_id == 3:  # visplas, with StVk+VM, no thickening
             state.particle_F[p] = viscoplasticity_return_mapping_with_StVK(
                 state.particle_F_trial[p], model, p, dt
             )
-        elif model.material == 5:
+        elif mat_id == 5:
             state.particle_F[p] = von_mises_return_mapping_with_damage(
                 state.particle_F_trial[p], model, p
             )
@@ -474,19 +484,19 @@ def compute_stress_from_F_trial(
         sig = wp.vec3(0.0)
         stress = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
         wp.svd3(state.particle_F[p], U, sig, V)
-        if model.material == 0 or model.material == 5:
+        if mat_id == 0 or mat_id == 5:
             stress = kirchoff_stress_FCR(
                 state.particle_F[p], U, V, J, model.mu[p], model.lam[p]
             )
-        if model.material == 1:
+        if mat_id == 1:
             stress = kirchoff_stress_StVK(
                 state.particle_F[p], U, V, sig, model.mu[p], model.lam[p]
             )
-        if model.material == 2:
+        if mat_id == 2: 
             stress = kirchoff_stress_drucker_prager(
                 state.particle_F[p], U, V, sig, model.mu[p], model.lam[p]
             )
-        if model.material == 3:
+        if mat_id == 3:
             # temporarily use stvk, subject to change
             stress = kirchoff_stress_StVK(
                 state.particle_F[p], U, V, sig, model.mu[p], model.lam[p]
@@ -591,6 +601,13 @@ def apply_per_particle_material(
     model.E[p] = E_array[p]
     model.nu[p] = nu_array[p]
     state.particle_density[p] = density_array[p]
+
+@wp.kernel
+def compute_alpha_from_friction(friction_angle: wp.array(dtype=float), alpha: wp.array(dtype=float)):
+    tid = wp.tid()
+    phi = friction_angle[tid]
+    sin_phi = wp.sin(phi / 180.0 * 3.14159265)
+    alpha[tid] = wp.sqrt(2.0 / 3.0) * 2.0 * sin_phi / (3.0 - sin_phi)
 
 
 @wp.kernel

@@ -50,6 +50,88 @@ wp.config.verify_cuda = True
 ti.init(arch=ti.cuda, device_memory_GB=8.0)
 
 ## my part
+material_list = {
+    "sand":{
+        "material":"sand",
+        "E": 5e7,
+        "nu": 0.3,
+        "density":2000, 
+        "friction_angle": 20,
+        "softening": 0.1,
+        "cohesion": 0.0
+    },
+    "soil":{
+        "material":"sand",
+        "E": 5e7,
+        "nu": 0.3,
+        "density":2000, 
+        "friction_angle": 50,
+        "softening": 0.1,
+        "cohesion": 0.0001 
+    },
+    "metal":{
+        "material": "metal",
+        "E": 1e8,
+        "nu": 0.3,
+        "density": 1000,
+        "yield_stress": 1e5,
+        "hardening": 1,
+        "xi": 0.01  
+    },
+    "jelly":{
+        "material": "jelly",
+        "E": 6e3,
+        "nu": 0.3,
+        "density": 200
+    },
+    "plush":{
+        "material": "jelly",
+        "E": 1e4,
+        "nu": 0.3,
+        "density": 100
+    },
+    "wood":{
+        "material": "jelly",
+        "E": 1e6,
+        "nu": 0.3,
+        "density": 500
+    },
+    "plastic":{
+        "material": "jelly",
+        "E": 1e9,
+        "nu": 0.3,
+        "density": 300
+    },
+    "paste":{
+        "material": "foam",
+        "E": 5e5,
+        "nu": 0.3,
+        "density": 1000,
+        "yield_stress": 1e5,
+        "plastic_viscosity": 10
+    },
+    "liquid":{
+        "material": "water",
+        "E": 1e4,
+        "nu": 0.45,
+        "density": 1000,
+        "yield_stress": 1e2,
+        "plastic_viscosity": 0.01
+    }
+}
+
+material_index_to_name = {
+    0: "sand",
+    1: "soil",
+    2: "metal",
+    3: "jelly",
+    4: "plush",
+    5: "wood",
+    6: "plastic",
+    7: "paste",
+    8: "liquid"
+}
+
 def compare_tensors(name, t1, t2, atol=1e-6):
     if t1.shape != t2.shape:
         print(f"[❌] {name}: shape mismatch {t1.shape} vs {t2.shape}")
@@ -58,11 +140,36 @@ def compare_tensors(name, t1, t2, atol=1e-6):
         print(f"[⚠️] {name}: value mismatch (max diff = {diff.max().item():.6f})")
     else:
         print(f"[✅] {name}: matched")
-## Usage example:
-# gaussian_dict = load_combined_gaussians_from_ply_json(
-#     "merged_gaussians.ply",
-#     "merged_gaussians_phys.json"
-# )
+
+def get_per_particle_material_dict(material_tensor):
+    material_names = [material_index_to_name[int(i)] for i in material_tensor.cpu()]
+    N = len(material_names)
+
+    # 收集所有出現過的欄位
+    all_keys = set()
+    for mat in material_list.values():
+        all_keys.update(mat.keys())
+    all_keys.discard("material")  # 不需要這個欄位
+
+    # 初始化 dict（填入預設 0）
+    field_dict = {k: [0.0] * N for k in all_keys}
+
+    for i, name in enumerate(material_names):
+        mat_dict = material_list[name]
+        for k in all_keys:
+            if k in mat_dict:
+                field_dict[k][i] = mat_dict[k]  # 有則寫入，無則保留 0
+
+    # ➕ 額外加上 material_id
+    field_dict["material_id"] = material_tensor.clone()
+
+    # 轉成 Tensor
+    for k in field_dict:
+        dtype = torch.long if k == "material_id" else torch.float32
+        field_dict[k] = torch.tensor(field_dict[k], dtype=dtype, device="cuda") if not torch.is_tensor(field_dict[k]) else field_dict[k]
+
+    return field_dict
+
 ## end of my part
 
 class PipelineParamsNoparse:
@@ -273,65 +380,26 @@ if __name__ == "__main__":
         grid_lim=material_params["grid_lim"],
     )
 
-    ## My part 將 mpm_init_pos project 到原始的 image 上面
-    # show_3d_points(init_pos)
-    # print("Load image list and camera parameters list")
-    # image_list, camera_params_list = load_nerf_synthetic_camera_and_images("../nerf_synthetic/ficus/transforms_train.json", 
-    #                                                                        "../nerf_synthetic/ficus/")
-    
-    # origin_pos = mpm_init_pos.clone()
-    # origin_pos = apply_inverse_rotations(
-    #             undotransform2origin(
-    #                 undoshift2center111(origin_pos), scale_origin, original_mean_pos
-    #             ),
-    #             rotation_matrices,
-    #         )
-    
-    # print("Project particles to images and vote colors")
-    # color_votes, initialized = z_buffer_vote(
-    #     particle_x=origin_pos,
-    #     image_list=image_list,
-    #     camera_params_list=camera_params_list, 
-    #     max_per_pixel=1
-    # )
-
-    # print("Start infilling material parameters by KNN")
-    # E_tensor, nu_tensor, density_tensor, final_colors = knn_infill(
-    #     particle_x=origin_pos,         # same as before
-    #     initialized_mask=initialized,        # bool mask
-    #     color_votes=color_votes,
-    #     color_to_material=color_to_material, 
-    #     param_table=material_param_table,
-    #     k=5
-    # )
-
-    # show_3d_points_with_colors(init_pos, final_colors)
-        
-    # print("Visible gs number:", visible_gs_num)
-    # print("E_tensor:", E_tensor[0])
-    # print("nu_tensor:", nu_tensor[0])
-    # print("density_tensor:", density_tensor[0])
-
-    # print("Set material parameters")
-
-    # 讀取 merged_gaussians_phys.json
+    ## set up the material parameters
     with open(args.phys_config, "r") as f:
         phys = json.load(f)
+    material_tensor = torch.tensor(phys["material"], dtype=torch.long, device="cuda")
 
-    E_tensor = torch.tensor(phys["E"], dtype=torch.float32, device="cuda")
-    nu_tensor = torch.tensor(phys["nu"], dtype=torch.float32, device="cuda")
-    density_tensor = torch.tensor(phys["density"], dtype=torch.float32, device="cuda")
+    
+    material_params["per_particle_material"] = get_per_particle_material_dict(material_tensor)
 
-    E_tensor, nu_tensor, density_tensor = knn_fill_new_physics(
-        init_pos, mpm_init_pos, E_tensor, nu_tensor, density_tensor
+    material_params["per_particle_material"] = knn_fill_new_physics_dict(
+        init_pos,
+        mpm_init_pos,
+        material_params["per_particle_material"],
+        k=3
     )
 
-    # 設定到 material_params
-    material_params["per_particle_material"] = {
-        "E": E_tensor,
-        "nu": nu_tensor,
-        "density": density_tensor,
-    }
+    n_particles = mpm_init_pos.shape[0]
+    for key, val in material_params["per_particle_material"].items():
+        assert val.shape[0] == n_particles, f"After filling [❌] {key} length mismatch: {val.shape[0]} vs {n_particles}"
+    print(f"[✅] All material parameters match {n_particles} particles.")
+    
     
     mpm_solver.set_parameters_dict(material_params)
 

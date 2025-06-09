@@ -66,6 +66,7 @@ def save_combined_gaussians_to_ply_json_from_models(
     all_xyz, all_dc, all_rest = [], [], []
     all_opacity, all_scale, all_rot = [], [], []
     all_E, all_nu, all_density = [], [], []
+    all_material = []
 
 
     for g, json_path in zip(models, physics_json_paths):
@@ -83,9 +84,7 @@ def save_combined_gaussians_to_ply_json_from_models(
 
         with open(json_path) as f:
             phys = json.load(f)
-        all_E.append(torch.tensor(phys["E"], dtype=torch.float32))
-        all_nu.append(torch.tensor(phys["nu"], dtype=torch.float32))
-        all_density.append(torch.tensor(phys["density"], dtype=torch.float32))
+        all_material.append(torch.tensor(phys["material"], dtype=torch.long))
 
     # 合併所有資料
     g_combined = GaussianModel(models[0].max_sh_degree)
@@ -109,14 +108,10 @@ def save_combined_gaussians_to_ply_json_from_models(
     g_combined.save_ply(ply_path)
     print(f"[Saved] Gaussian PLY → {ply_path}")
 
-    # 儲存 physics json
-    phys_dict = {
-        "E": torch.cat(all_E, dim=0).tolist(),
-        "nu": torch.cat(all_nu, dim=0).tolist(),
-        "density": torch.cat(all_density, dim=0).tolist(),
-    }
     with open(f"{filename_prefix}_phys.json", "w") as f:
-        json.dump(phys_dict, f, indent=2)
+        json.dump({
+        "material": torch.cat(all_material, dim=0).tolist()
+        }, f, indent=2)
     print(f"[Saved] Physics parameters JSON → {filename_prefix}_phys.json")
 
 
@@ -224,8 +219,8 @@ json_paths = [p.replace(".ply", "_phys.json") for p in ply_paths]
 # 呼叫合併儲存函式
 save_combined_gaussians_to_ply_json_from_models(models, json_paths, filename_prefix="merge_dir/merged_gaussians")
 
-# g = GaussianModel(3)
-# g.load_ply("merge_dir/merged_gaussians.ply")
+g = GaussianModel(3)
+g.load_ply("merge_dir/merged_gaussians.ply")
 # g1 = GaussianModel(3)
 # g1.load_ply("output_groups/plant.ply")
 # compare_tensors("XYZ", g.get_xyz.cpu(), g1.get_xyz.cpu())
@@ -234,3 +229,11 @@ save_combined_gaussians_to_ply_json_from_models(models, json_paths, filename_pre
 # compare_tensors("Opacity", g._opacity.cpu(), g1._opacity.cpu())
 # compare_tensors("Scaling", g._scaling.cpu(), g1._scaling.cpu())
 # compare_tensors("Rotation", g._rotation.cpu(), g1._rotation.cpu())
+with open("merge_dir/merged_gaussians_phys.json", "r") as f:
+    phys = json.load(f)
+
+material_list = phys["material"]
+if len(material_list) != g.get_xyz.shape[0]:
+    print(f"[❌] Mismatch: Gaussian count = {g.get_xyz.shape[0]}, Material count = {len(material_list)}")
+else:
+    print(f"[✅] Matched: {len(material_list)} gaussians and materials")
