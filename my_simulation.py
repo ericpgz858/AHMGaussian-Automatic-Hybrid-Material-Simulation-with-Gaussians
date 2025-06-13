@@ -53,10 +53,10 @@ ti.init(arch=ti.cuda, device_memory_GB=8.0)
 material_list = {
     "sand":{
         "material":"sand",
-        "E": 5e7,
+        "E": 2e7,
         "nu": 0.3,
         "density":2000, 
-        "friction_angle": 20,
+        "friction_angle": 5,
         "softening": 0.1,
         "cohesion": 0.0
     },
@@ -80,9 +80,9 @@ material_list = {
     },
     "jelly":{
         "material": "jelly",
-        "E": 6e3,
-        "nu": 0.3,
-        "density": 200
+        "E": 2e6,
+        "nu": 0.4,
+        "density": 70
     },
     "plush":{
         "material": "jelly",
@@ -120,16 +120,37 @@ material_list = {
     }
 }
 
+# material_index_to_name = {
+#     0: "sand",
+#     1: "jelly",
+#     2: "jelly",
+#     3: "sand",
+#     4: "plush",
+#     5: "jelly",
+#     6: "plastic",
+#     7: "paste",
+#     8: "liquid"
+# }
+# material_index_to_name = {
+#     0: "sand",
+#     1: "soil",
+#     2: "metal",
+#     3: "jelly",
+#     4: "plush",
+#     5: "wood",
+#     6: "plastic",
+#     7: "paste",
+#     8: "liquid"
+# }
+
 material_index_to_name = {
-    0: "sand",
-    1: "soil",
-    2: "metal",
-    3: "jelly",
-    4: "plush",
-    5: "wood",
-    6: "plastic",
-    7: "paste",
-    8: "liquid"
+    0: "jelly",
+    1: "metal",
+    2: "sand",
+    3: "foam",
+    4: "snow",
+    5: "plastic",
+    6: "water",
 }
 
 def compare_tensors(name, t1, t2, atol=1e-6):
@@ -156,6 +177,7 @@ def get_per_particle_material_dict(material_tensor):
 
     for i, name in enumerate(material_names):
         mat_dict = material_list[name]
+        # print(f"Material {i}: {name}, properties: {mat_dict}")
         for k in all_keys:
             if k in mat_dict:
                 field_dict[k][i] = mat_dict[k]  # 有則寫入，無則保留 0
@@ -169,6 +191,110 @@ def get_per_particle_material_dict(material_tensor):
         field_dict[k] = torch.tensor(field_dict[k], dtype=dtype, device="cuda") if not torch.is_tensor(field_dict[k]) else field_dict[k]
 
     return field_dict
+
+def combine_gaussians(
+    models: list[GaussianModel]
+):
+    all_xyz, all_dc, all_rest = [], [], []
+    all_opacity, all_scale, all_rot = [], [], []
+
+    for g in models:
+        all_xyz.append(g.get_xyz.detach().cpu())
+        # shs = g.get_features.detach().cpu()          # (N, 16, 3)
+        # shs = shs.permute(0, 2, 1).contiguous()      # → (N, 3, 16)
+        # f_dc = shs[:, :, 0:1]                         # (N, 3, 1)
+        # f_rest = shs[:, :, 1:] 
+        all_dc.append(g._features_dc.detach().cpu())
+        all_rest.append(g._features_rest.detach().cpu())
+
+        all_opacity.append(g._opacity.detach().cpu())       # ✔ 原始值
+        all_scale.append(g._scaling.detach().cpu())         # ✔ log-scale
+        all_rot.append(g._rotation.detach().cpu())   
+
+    # 合併所有資料
+    g_combined = GaussianModel(models[0].max_sh_degree)
+    g_combined.active_sh_degree = g_combined.max_sh_degree
+    g_combined._xyz           = torch.cat(all_xyz, dim=0).clone().to("cuda")
+    g_combined._features_dc   = torch.cat(all_dc, dim=0).clone().to("cuda")
+    g_combined._features_rest = torch.cat(all_rest, dim=0).clone().to("cuda")
+    g_combined._opacity       = torch.cat(all_opacity, dim=0).clone().to("cuda")
+    g_combined._scaling       = torch.cat(all_scale, dim=0).clone().to("cuda")
+    g_combined._rotation      = torch.cat(all_rot, dim=0).clone().to("cuda")
+    # render_gaussian_model(g_combined, frame_num=60)
+
+    return g_combined
+
+def load_material_dict_from_parameter_jsons(parameter_json_paths, counts):
+    """
+    parameter_json_paths: List of paths to `*_parameter.json`
+    counts: Number of gaussians per model (same order)
+
+    return: A dict of per-particle material tensors (E, nu, density, ..., material_id)
+    """
+    field_dict = {}
+    material_name_set = set()
+
+    # Step 1: 動態收集所有出現過的欄位 + material 名稱
+    for path in parameter_json_paths:
+        with open(path, "r") as f:
+            param = json.load(f)
+        for k in param:
+            if k != "material":
+                field_dict.setdefault(k, [])
+        material_name_set.add(param["material"])
+
+    # Step 2: 建立 material_name → index 對照表
+    material_name_to_index = {
+        name: idx for idx, name in enumerate(sorted(material_name_set))
+    }
+
+    # Step 3: 對每個 model 擴充 tensor 資料
+    material_ids = []
+    for path, count in zip(parameter_json_paths, counts):
+        with open(path, "r") as f:
+            param = json.load(f)
+
+        mat_name = param["material"]
+        mat_id = material_name_to_index[mat_name]
+        material_ids.extend([mat_id] * count)
+
+        for key in field_dict:
+            val = param.get(key, 0.0)
+            field_dict[key].extend([val] * count)
+
+    # Step 4: 轉成 CUDA tensor
+    result = {
+        k: torch.tensor(v, dtype=torch.float32, device="cuda")
+        for k, v in field_dict.items()
+    }
+    result["material_id"] = torch.tensor(material_ids, dtype=torch.long, device="cuda")
+    return result
+
+
+def setup_model(dir):
+    dir = dir + "/*.ply"
+    ply_paths = sorted(glob(dir))
+    parameter_paths = [p.replace(".ply", "_parameter.json") for p in ply_paths]
+
+    models = []
+    counts = []
+
+    for path in ply_paths:
+        g = GaussianModel(3)
+        g.load_ply(path)
+        models.append(g)
+        counts.append(g.get_xyz.shape[0])
+
+    # Combine Gaussian model only
+    g_combined = combine_gaussians(models)
+
+    # Convert parameter.json to tensor dict
+    material_tensor_dict = load_material_dict_from_parameter_jsons(parameter_paths, counts)
+
+    # Now pass directly into my_simulation.py
+    # material_params["per_particle_material"] = material_tensor_dict
+
+    return g_combined, material_tensor_dict
 
 ## end of my part
 
@@ -199,10 +325,10 @@ def load_checkpoint(model_path, sh_degree=3, iteration=-1):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", type=str, required=True)
-    parser.add_argument("--merge_gaussian", type=str, required=True)
+    parser.add_argument("--merge_folder", type=str, required=True)
     parser.add_argument("--output_path", type=str, default=None)
     parser.add_argument("--config", type=str, required=True)
-    parser.add_argument("--phys_config", type=str, required=True)
+    # parser.add_argument("--phys_config", type=str, required=True)
     parser.add_argument("--output_ply", action="store_true")
     parser.add_argument("--output_h5", action="store_true")
     parser.add_argument("--render_img", action="store_true")
@@ -232,8 +358,9 @@ if __name__ == "__main__":
     print("Loading gaussians...")
     model_path = args.model_path
     # gaussians = load_checkpoint(model_path)
-    gaussians = GaussianModel(3)
-    gaussians.load_ply(args.merge_gaussian)
+    gaussians, material_tensor = setup_model(args.merge_folder)
+    # gaussians = GaussianModel(3)
+    # gaussians.load_ply(args.merge_gaussian)
     pipeline = PipelineParamsNoparse()
     pipeline.compute_cov3D_python = True
     background = (
@@ -381,12 +508,12 @@ if __name__ == "__main__":
     )
 
     ## set up the material parameters
-    with open(args.phys_config, "r") as f:
-        phys = json.load(f)
-    material_tensor = torch.tensor(phys["material"], dtype=torch.long, device="cuda")
+    # with open(args.phys_config, "r") as f:
+    #     phys = json.load(f)
+    # material_tensor = torch.tensor(phys["material"], dtype=torch.long, device="cuda")
+    # material_params["per_particle_material"] = get_per_particle_material_dict(material_tensor)
 
-    
-    material_params["per_particle_material"] = get_per_particle_material_dict(material_tensor)
+    material_params["per_particle_material"] = material_tensor
 
     material_params["per_particle_material"] = knn_fill_new_physics_dict(
         init_pos,
@@ -395,10 +522,12 @@ if __name__ == "__main__":
         k=3
     )
 
+    # show_3d_points(mpm_init_pos)
     n_particles = mpm_init_pos.shape[0]
     for key, val in material_params["per_particle_material"].items():
-        assert val.shape[0] == n_particles, f"After filling [❌] {key} length mismatch: {val.shape[0]} vs {n_particles}"
-    print(f"[✅] All material parameters match {n_particles} particles.")
+        assert val.shape[0] == n_particles, f"After filling {key} length mismatch: {val.shape[0]} vs {n_particles}"
+    print(f"All material parameters match {n_particles} particles.")
+    # print("Material parameters:", material_params["per_particle_material"])
     
     
     mpm_solver.set_parameters_dict(material_params)

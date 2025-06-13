@@ -18,20 +18,25 @@ class MPMModelStruct:
     lam: wp.array(dtype=float)
     E: wp.array(dtype=float)
     nu: wp.array(dtype=float)
-    material: int
-    material_id: wp.array(dtype=int)  # ✅ 每顆粒子的模型編號
+    material: wp.array(dtype=int)
 
     ######## for plasticity ####
     yield_stress: wp.array(dtype=float)
+    # friction_angle: float
+    # alpha: float
     friction_angle: wp.array(dtype=float)
     alpha: wp.array(dtype=float)
+    gravitational_accelaration: wp.vec3
+    # hardening: float
+    # xi: float
     hardening: wp.array(dtype=float)
     xi: wp.array(dtype=float)
     plastic_viscosity: wp.array(dtype=float)
     softening: wp.array(dtype=float)
-    cohesion: wp.array(dtype=float)  # ✅ 你原始 material_list 中有
-
-    gravitational_accelaration: wp.vec3
+    
+    ######### added #####
+    # cohesion: float
+    cohesion: wp.array(dtype=float)
 
     ####### for damping
     rpic_damping: float
@@ -39,7 +44,6 @@ class MPMModelStruct:
 
     ####### for PhysGaussian: covariance
     update_cov_with_F: int
-
 
 
 @wp.struct
@@ -107,6 +111,11 @@ class Dirichlet_collider:
     horizontal_axis_1: wp.vec3
     horizontal_axis_2: wp.vec3
     half_height_and_radius: wp.vec2
+    
+    # boundingbox
+    padding: int
+    restitution: float
+    
 
 
 @wp.struct
@@ -158,6 +167,45 @@ class MaterialParamsModifier:
     E: float
     nu: float
     density: float
+    material: int
+
+
+@wp.struct
+class BasicModifier:
+    point: wp.vec3
+    size: wp.vec3
+    E: wp.array(dtype=float)
+    nu: wp.array(dtype=float)
+    density: wp.array(dtype=float)
+    material: wp.array(dtype=int)
+
+@wp.struct
+class ExtendModifier:
+    yield_stress: wp.array(dtype=float)
+    hardening: wp.array(dtype=float)
+    xi: wp.array(dtype=float)
+    friction_angle: wp.array(dtype=float)
+    softening: wp.array(dtype=float)
+    cohesion: wp.array(dtype=float)
+    plastic_viscosity: wp.array(dtype=float)
+
+@wp.struct
+class PerParticleModifier:
+    point: wp.vec3
+    size: wp.vec3
+    E: wp.array(dtype=float)
+    nu: wp.array(dtype=float)
+    density: wp.array(dtype=float)
+    material: wp.array(dtype=int)
+
+    yield_stress: wp.array(dtype=float)
+    hardening: wp.array(dtype=float)
+    xi: wp.array(dtype=float)
+    friction_angle: wp.array(dtype=float)
+    softening: wp.array(dtype=float)
+    cohesion: wp.array(dtype=float)
+    plastic_viscosity: wp.array(dtype=float)
+    
 
 
 @wp.struct
@@ -273,6 +321,10 @@ def torch2warp_float(t, copy=False, dtype=warp.types.float32, dvc="cuda:0"):
     )
     a.tensor = t
     return a
+
+def torch2warp_int(tensor: torch.Tensor, dvc="cuda:0"):
+    tensor = tensor.to(dtype=torch.int32, device=dvc).contiguous()
+    return wp.from_torch(tensor, dtype=wp.int32)
 
 
 def torch2warp_vec3(t, copy=False, dtype=warp.types.float32, dvc="cuda:0"):

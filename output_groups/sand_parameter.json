@@ -1,0 +1,9 @@
+{
+  "material": "sand",
+  "E": 50000000.0,
+  "nu": 0.3,
+  "density": 2000,
+  "friction_angle": 20,
+  "softening": 0.1,
+  "cohesion": 0.0
+}

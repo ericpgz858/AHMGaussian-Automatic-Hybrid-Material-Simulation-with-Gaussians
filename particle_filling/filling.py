@@ -34,57 +34,68 @@ def densify_grids(
 ):
     for pi in range(init_particles.shape[0]):
         pos = init_particles[pi]
-        x = pos[0]
-        y = pos[1]
-        z = pos[2]
+        x, y, z = pos[0], pos[1], pos[2]
         i = ti.floor(x / grid_dx, dtype=int)
         j = ti.floor(y / grid_dx, dtype=int)
         k = ti.floor(z / grid_dx, dtype=int)
-        ti.atomic_add(grid[i, j, k], 1)
-        cov = ti.Matrix(
-            [
-                [cov_upper[pi][0], cov_upper[pi][1], cov_upper[pi][2]],
-                [cov_upper[pi][1], cov_upper[pi][3], cov_upper[pi][4]],
-                [cov_upper[pi][2], cov_upper[pi][4], cov_upper[pi][5]],
-            ]
-        )
+
+        if 0 <= i < grid.shape[0] and 0 <= j < grid.shape[1] and 0 <= k < grid.shape[2]:
+            ti.atomic_add(grid[i, j, k], 1)
+
+        # Construct full covariance
+        cov = ti.Matrix([
+            [cov_upper[pi][0], cov_upper[pi][1], cov_upper[pi][2]],
+            [cov_upper[pi][1], cov_upper[pi][3], cov_upper[pi][4]],
+            [cov_upper[pi][2], cov_upper[pi][4], cov_upper[pi][5]],
+        ])
+
+        # Check for NaN or inf
+        valid = True
+        for p in ti.static(range(3)):
+            for q in ti.static(range(3)):
+                if ti.math.isnan(cov[p, q]) or ti.math.isinf(cov[p, q]):
+                    valid = False
+        if not valid:
+            print(f'[ERROR] Particle {pi} has invalid value in cov')
+            continue  # skip this particle
+
+        # Eigen decomposition
         sig, Q = ti.sym_eig(cov)
-        sig[0] = ti.max(sig[0], 1e-8)
-        sig[1] = ti.max(sig[1], 1e-8)
-        sig[2] = ti.max(sig[2], 1e-8)
+        for idx in ti.static(range(3)):
+            sig[idx] = ti.max(sig[idx], 1e-8)
+
         sig_mat = ti.Matrix(
             [[1.0 / sig[0], 0, 0], [0, 1.0 / sig[1], 0], [0, 0, 1.0 / sig[2]]]
         )
         cov = Q @ sig_mat @ Q.transpose()
+
+        # Compute r
         r = 0.0
         for idx in ti.static(range(3)):
-            if sig[idx] < 0:
-                sig[idx] = ti.sqrt(-sig[idx])
-            else:
-                sig[idx] = ti.sqrt(sig[idx])
-
-            r = ti.max(r, sig[idx])
-
+            s = ti.sqrt(sig[idx])
+            sig[idx] = s
+            r = ti.max(r, s)
         r = ti.ceil(r / grid_dx, dtype=int)
+        
+        max_r = 6  # Safety Upper Bound For r
+        if r > max_r:
+            print("[WARNING] Large r at particle", pi, "->", r)
+            r = max_r
+
         for dx in range(-r, r + 1):
             for dy in range(-r, r + 1):
                 for dz in range(-r, r + 1):
+                    gi, gj, gk = i + dx, j + dy, k + dz
                     if (
-                        i + dx >= 0
-                        and i + dx < grid_density.shape[0]
-                        and j + dy >= 0
-                        and j + dy < grid_density.shape[1]
-                        and k + dz >= 0
-                        and k + dz < grid_density.shape[2]
+                        0 <= gi < grid_density.shape[0] and
+                        0 <= gj < grid_density.shape[1] and
+                        0 <= gk < grid_density.shape[2]
                     ):
                         density = compute_density(
-                            ti.Vector([i + dx, j + dy, k + dz]),
-                            pos,
-                            opacity[pi],
-                            cov,
-                            grid_dx,
+                            ti.Vector([gi, gj, gk]), pos, opacity[pi], cov, grid_dx
                         )
-                        ti.atomic_add(grid_density[i + dx, j + dy, k + dz], density)
+                        ti.atomic_add(grid_density[gi, gj, gk], density)
+
 
 
 @ti.kernel
@@ -304,6 +315,7 @@ def fill_particles(
     smooth: bool = False,
 ):
     pos_clone = pos.clone()
+    print('Set Boundary')
     if boundary is not None:
         assert len(boundary) == 6
         mask = torch.ones(pos_clone.shape[0], dtype=torch.bool).cuda()
@@ -321,6 +333,7 @@ def fill_particles(
         new_origin = torch.tensor([boundary[0], boundary[2], boundary[4]]).cuda()
         pos = pos - new_origin
 
+    print('Set Taichi')
     ti_pos = ti.Vector.field(n=3, dtype=float, shape=pos.shape[0])
     ti_opacity = ti.field(dtype=float, shape=opacity.shape[0])
     ti_cov = ti.Vector.field(n=6, dtype=float, shape=cov.shape[0])
@@ -333,9 +346,12 @@ def fill_particles(
     particles = ti.Vector.field(n=3, dtype=float, shape=max_samples)
     fill_num = 0
 
+    print('Densify grid')
     # compute density_field
     densify_grids(ti_pos, ti_opacity, ti_cov, grid, grid_density, grid_dx)
+    ti.sync()
 
+    print('Fill Dense Grid')
     # fill dense grids
     fill_num = fill_dense_grids(
         grid,
@@ -443,4 +459,5 @@ def init_filled_particles(pos, shs, cov, opacity, new_pos):
     shs_tensor = shs_tensor.view(shs_tensor.shape[0], -1, 3)
     opacity_tensor = torch.cat([opacity, opacity_tensor.reshape(-1, 1)], dim=0)
     cov_tensor = torch.cat([cov, cov_tensor], dim=0)
+    
     return shs_tensor, opacity_tensor, cov_tensor
