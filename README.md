@@ -1,12 +1,5 @@
-Here's a polished English version of your documentation with clearer structure and smoother phrasing:
-
----
-
 # **AHMGaussian: Automatic Hybrid-Material Simulation with Gaussians**
-
-## **My Update**
-
-### `preprocess.py`
+## `preprocess.py`
 
 | Argument          | Description                                                                                 |
 | ----------------- | ------------------------------------------------------------------------------------------- |
@@ -28,7 +21,7 @@ python preprocess.py \
 
 ---
 
-### `my_simulation.py`
+## `my_simulation.py`
 
 | Argument          | Description                                                                    |
 | ----------------- | ------------------------------------------------------------------------------ |
