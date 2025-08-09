@@ -151,6 +151,6 @@ All physics simulation is still executed by the AHMGaussian Python pipeline.
 
 
 
-[![Poster Preview](report\poster1.jpg)](report\post.pdf)
-[![Poster Preview](report\poster2.jpg)](report\post.pdf)
+[![Poster Preview](report/poster1.jpg)](report/post.pdf)
+[![Poster Preview](report/poster2.jpg)](report/post.pdf)
 
