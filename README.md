@@ -56,8 +56,8 @@
     <th style="text-align:center">High Amtitude of Disturbance</th>
   </tr>
   <tr>
-    <td><img src="report\Water1.gif" width="350"/></td>
-    <td><img src="report\Water2.gif" width="350"/></td>
+    <td><img src="report\water1.gif" width="350"/></td>
+    <td><img src="report\water2.gif" width="350"/></td>
   </tr>
   <tr>
     <th style="text-align:center">Smaller than Yield_Stress</th>
