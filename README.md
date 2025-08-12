@@ -1,4 +1,5 @@
 # **AHMGaussian: Automatic Hybrid-Material Simulation with Gaussians**
+
 ## **Motivation**
 
 > **Goal:** Generate **physics-informed** 3D objects from images, supporting **diverse materials**.
@@ -24,6 +25,8 @@
 * **Extended Material Library**
   Include more material categories for broader simulation coverage.
 
+## Poster Download
+[View Full Poster (PDF)](report/post.pdf)
 
 ## Simulation Results
 <table>
@@ -59,14 +62,14 @@
     <td><img src="report\water1.gif" width="350"/></td>
     <td><img src="report\water2.gif" width="350"/></td>
   </tr>
-  <tr>
+  <!-- <tr>
     <th style="text-align:center">Smaller than Yield_Stress</th>
     <th style="text-align:center">Larger than Yield_Stress</th>
   </tr>
   <tr>
     <td><img src="report\Metal1.gif" width="350"/></td>
     <td><img src="report\Metal2.gif" width="350"/></td>
-  </tr>
+  </tr> -->
   <tr>
     <th style="text-align:center">Smaller than Yield_Stress</th>
     <th style="text-align:center">Larger than Yield_Stress</th>
@@ -146,11 +149,5 @@ to visualize simulation results and adjust **material parameters** or **simulati
 Unity handles visualization and parameter editing.  
 All physics simulation is still executed by the AHMGaussian Python pipeline.
 
-**Post Overview:**
 
-
-
-
-[![Poster Preview](report/poster1.jpg)](report/post.pdf)
-[![Poster Preview](report/poster2.jpg)](report/post.pdf)
 
